@@ -1,5 +1,4 @@
 requests
 flask
 pillow
-brother_ql
 qrcode

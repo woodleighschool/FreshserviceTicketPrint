@@ -1,5 +1,5 @@
-from flask import Flask, request, jsonify
 import os
+from flask import Flask, request, jsonify
 import requests
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
@@ -27,6 +27,14 @@ def webhook():
     else:
         return jsonify({'status': 'Unauthorized'}), 401
 
+def get_ticket_value(ticket_data, keys, default=None):
+    data = ticket_data.get('ticket', {})
+    for key in keys:
+        if isinstance(data, dict) and key in data:
+            data = data[key]
+        else:
+            return default
+    return data
 
 # main run block
 def run(ticket_number):
@@ -37,33 +45,42 @@ def run(ticket_number):
     url = f'https://woodleigh.freshservice.com/api/v2/tickets/{ticket_number}?include=requester'
     headers = {'Content-Type': 'application/json'}
     auth = (f'{freshservice_api_key}', 'X')
-    response = requests.get(url, headers=headers, auth=auth)
+    response = requests.get(url, headers=headers, auth=auth, timeout=10)
 
     # Check the response status code
     if response.status_code != 200:
         raise ValueError(f"Invalid Ticket: {ticket_number}")
 
     # Generate required data to paste in the output
-    ticket_data = response.json()
-    ticket_url = f'https://servicedesk.woodleigh.vic.edu.au/a/tickets/{ticket_number}'
-    requester_name = ticket_data.get(
-        'ticket', {}).get('requester', {}).get('name')
-    compnow_id = ticket_data.get('ticket', {}).get(
-        'custom_fields', {}).get('compnow_ticket_no')
+    response_data = response.json()
 
     # make sure queue path exists
     if not os.path.exists("queue"):
         os.makedirs("queue")
 
     # Generate the image to print
-    generate_ticket(ticket_number, ticket_url, requester_name, compnow_id)
+    generate_ticket(ticket_number, response_data)
 
     # Print the generated image
     print_ticket(ticket_number)
 
 
 # generate_ticket function
-def generate_ticket(ticket_number, ticket_url, requester_name, compnow_id):
+def generate_ticket(ticket_number, response_data):
+
+    # define variables
+    ticket_url = f'https://servicedesk.woodleigh.vic.edu.au/a/tickets/{ticket_number}'
+    requester_name = get_ticket_value(response_data, ['requester', 'name'])
+    requester_name = "Awesome IT (Requester Name)"
+    compnow_id = get_ticket_value(
+        response_data, ['custom_fields', 'compnow_ticket_no'])
+    subject = get_ticket_value(
+        response_data, ['subject'])
+    global_x = 566
+    global_buffer = 10  # space between lines
+    current_y = 170  # initial y px to start the lines
+    ticket_type = ''
+
     # Create a QR code for the ticket URL
     qr = qrcode.QRCode(version=1, box_size=16, border=0)
     qr.add_data(ticket_url)
@@ -75,42 +92,40 @@ def generate_ticket(ticket_number, ticket_url, requester_name, compnow_id):
     template_img.paste(qr_img, (19, 19))
     draw = ImageDraw.Draw(template_img)
 
-    # Add the ticket number(s) to the right of the QR code
-    font = ImageFont.truetype('assets/Arial Bold.ttf', size=48)
-    draw.text(
-        (566, 170), f'HelpDesk Ticket: #{ticket_number}', font=font, fill='black')
-    if compnow_id is not None and compnow_id != '':
-        draw.text(
-            (566, 512), f'CompNow Ticket: #{compnow_id}', font=font, fill='black')
-
-    # Add the requester's name underneath the ticket number
+    # Add Requesters name (auto size to fit sticker width)
     max_width = 596
-    max_height = 316
     font_size = 50
-    font = ImageFont.truetype('assets/Arial.ttf', size=font_size)
-    name_lines = []
-    name_line = ""
-    for word in requester_name.split():
-        if font.getsize(name_line + word)[0] <= max_width:
-            name_line += word + " "
-        else:
-            name_lines.append(name_line.strip())
-            name_line = word + " "
-    if name_line:
-        name_lines.append(name_line.strip())
+    font = ImageFont.truetype('assets/Arial Bold.ttf', size=font_size)
+    # Get width of the text
+    text_width = draw.textlength(requester_name, font=font)
+    while text_width > max_width:
+        font_size -= 1
+        font = ImageFont.truetype('assets/Arial Bold.ttf', size=font_size)
+        text_width = draw.textlength(requester_name, font=font)
+    draw.text((global_x, current_y), requester_name, font=font, fill='black')
 
-    name_x = 566
-    name_y = 231
-    for name_line in name_lines:
-        name_width, name_height = font.getsize(name_line)
-        while name_width > max_width:
-            font_size -= 1
-            font = ImageFont.truetype('assets/Arial.ttf', size=font_size)
-            name_width, name_height = font.getsize(name_line)
-        if name_height > max_height:
-            name_y = 231 + (max_height - name_height) // 2
-        draw.text((name_x, name_y), name_line, font=font, fill='black')
-        name_y += name_height
+    font = ImageFont.truetype('assets/Arial.ttf', size=48)
+    # Try sus what type of ticket this is from the title
+    if 'REPAIR' in subject:
+        ticket_type = "Repair"
+    elif 'Year 12 Wipe' in subject:
+        ticket_type = "Year 12 Wipe"
+    elif 'Machine returned' in subject:
+        ticket_type = "Return"
+    current_y = current_y + 48 + global_buffer
+    # Add the ticket type if found
+    if ticket_type != '':
+        draw.text(
+            (global_x, current_y), f'Type: {ticket_type}', font=font, fill='black')
+        current_y = current_y + 48 + global_buffer
+    # Add the helpdesk ID
+    draw.text(
+        (global_x, current_y), f'HelpDesk #: {ticket_number}', font=font, fill='black')
+    # Add compnow ID if set
+    if compnow_id is not None and compnow_id != '':
+        current_y = current_y + 48 + global_buffer
+        draw.text(
+            (global_x, current_y), f'CompNow #: {compnow_id}', font=font, fill='black')
 
     # Save the final image
     ticket_image_path = f'queue/ticket_{ticket_number}.png'
@@ -124,11 +139,11 @@ def print_ticket(ticket_number):
     files = {'file': open(f'queue/ticket_{ticket_number}.png', 'rb')}
     try:
         response = requests.post(
-            'http://127.0.0.1:5001/print_image', headers=headers, files=files)
+            'http://127.0.0.1:5001/print_image', headers=headers, files=files, timeout=10)
         if response.status_code != 200:
-            raise ValueError(f"Failed to print?")
+            raise ValueError("Failed to print?")
     except:
-        raise ValueError(f"Failed to connect to printer")
+        raise ValueError("Failed to connect to printer")
 
 
 if __name__ == '__main__':
