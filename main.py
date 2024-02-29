@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 import requests
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
-
+from datetime import date
 
 app = Flask(__name__)
 
@@ -71,11 +71,8 @@ def generate_ticket(ticket_number, response_data):
     # define variables
     ticket_url = f'https://servicedesk.woodleigh.vic.edu.au/a/tickets/{ticket_number}'
     requester_name = get_ticket_value(response_data, ['requester', 'name'])
-    requester_name = "Awesome IT (Requester Name)"
-    compnow_id = get_ticket_value(
-        response_data, ['custom_fields', 'compnow_ticket_no'])
-    subject = get_ticket_value(
-        response_data, ['subject'])
+    compnow_id = get_ticket_value(response_data, ['custom_fields', 'compnow_ticket_no'])
+    subject = get_ticket_value(response_data, ['subject'])
     global_x = 566
     global_buffer = 10  # space between lines
     current_y = 170  # initial y px to start the lines
@@ -126,6 +123,10 @@ def generate_ticket(ticket_number, response_data):
         current_y = current_y + 48 + global_buffer
         draw.text(
             (global_x, current_y), f'CompNow #: {compnow_id}', font=font, fill='black')
+    # add the date to the ticket
+    today = date.today()
+    current_y = current_y + 144 + global_buffer
+    draw.text((global_x, current_y), today.strftime("%d %b %Y"), font=font, fill='black')
 
     # Save the final image
     ticket_image_path = f'queue/ticket_{ticket_number}.png'
